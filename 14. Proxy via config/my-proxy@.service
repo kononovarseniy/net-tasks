@@ -1,0 +1,16 @@
+[Unit]
+Description=Simple proxy
+Requires=my-proxy.socket
+
+[Service]
+# Сервис запускается сразу все необходимые ресурсы (сокеты)
+# должны быть готовы до запуска
+Type=simple
+# Запуск netcat для передачи данных из сокета на другой адрес.
+ExecStart=/bin/nc localhost 8888
+# Перенаправление ввода/вывода
+StandardInput=socket
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
