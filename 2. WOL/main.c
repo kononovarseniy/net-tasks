@@ -6,7 +6,7 @@
 //#include <netinet/ether.h>
 #include <netinet/in.h> // htons
 #include <net/ethernet.h> // ether_header
-#include <net/if.h> // ifreq
+#include <net/if.h> // if_nametoindex
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -20,33 +20,24 @@
 #define ETH_P_WOL 0x0842
 
 int main(int argc, const char *argv[]) {
-    int so = socket(AF_PACKET, SOCK_RAW, 0);
-    if (so == -1) {
-        perror("Unable to create socket");
-        exit(1);
-    }
-    printf("Socket successfuly open\n");
-
     uint8_t src[ETH_ALEN] = { 0x40, 0x16, 0x7e, 0x84, 0x41, 0x59 },
             dst[ETH_ALEN] = { 0x40, 0x16, 0x7e, 0x84, 0x41, 0x59 };
     //memset(src, 0, ETH_ALEN);
     //memset(dst, 0, ETH_ALEN);
 
-    char *ifname = "enp5s0";
-    struct ifreq ifr;
-    strncpy(ifr.ifr_name, ifname, sizeof(ifr.ifr_name));
-    if (ioctl(so, SIOCGIFINDEX, &ifr) == -1) {
-        fprintf(stderr, "SIOCGIFINDEX on %s failed: %s\n", ifname,
-                strerror(errno));
+    const char *ifname = "enp5s0";
+    unsigned int if_index = if_nametoindex(ifname);
+    if (if_index == 0) {
+        perror("if_nametosocket failed");
         exit(1);
     }
-    printf("Interface %s has ifindex %d\n", ifname, ifr.ifr_ifindex);
+    printf("Interface %s has ifindex %d\n", ifname, if_index);
 
     struct sockaddr_ll addr;
     memset(&addr, 0, sizeof(addr));
     addr.sll_family = AF_PACKET;
     addr.sll_halen = ETH_ALEN;
-    addr.sll_ifindex = ifr.ifr_ifindex;
+    addr.sll_ifindex = if_index; 
     memcpy(&addr.sll_addr, dst, ETH_ALEN);
     printf("Socket address structure initialized\n");
 
@@ -66,7 +57,14 @@ int main(int argc, const char *argv[]) {
         *ptr++ = dst[i % ETH_ALEN];
     printf("WOL payload written\n");
 
-    // Send a packet and close the socket.
+    // Open socket, send a packet and close the socket.
+    int so = socket(AF_PACKET, SOCK_RAW, 0);
+    if (so == -1) {
+        perror("Unable to create socket");
+        exit(1);
+    }
+    printf("Socket successfuly open\n");
+
     ssize_t sent = sendto(
             so, buf, PACKET_SIZE,
             0, (struct sockaddr *)&addr, sizeof(addr));
