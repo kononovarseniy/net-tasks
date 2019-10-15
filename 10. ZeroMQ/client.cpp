@@ -6,13 +6,12 @@ int main() {
     zmq::context_t context(1);
     zmq::socket_t socket(context, ZMQ_REQ);
 
-    socket.connect("tcp://127.0.0.1:8081");
-    socket.connect("tcp://127.0.0.1:8082");
     socket.connect("tcp://127.0.0.1:8083");
+    socket.connect("tcp://127.0.0.1:8084");
+    socket.connect("tcp://127.0.0.1:8085");
 
     for (;;) {
         std::string msg;
-        std::cout << ">>> ";
         std::cin >> msg;
 
         zmq::message_t req(msg.length());
@@ -23,7 +22,7 @@ int main() {
         socket.recv(&reply);
         std::string rmsg((char *)reply.data(), reply.size());
 
-        std::cout << rmsg << std::endl;
+        std::cout << "reply: " << rmsg << std::endl;
     }
     return 0;
 }
