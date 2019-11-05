@@ -132,20 +132,6 @@ void disconnect_client(int slot) {
     destroy_client(client);
 }
 
-int make_nonblocking(int fd) {
-    int flags = fcntl(fd, F_GETFL);
-    if (flags == -1) {
-        perror("WARNING Cannot make socket nonblocking: fnctl(F_GETFL)");
-        return -1;
-    }
-    flags |= O_NONBLOCK;
-    if (fcntl(fd, F_SETFL, flags) == -1) {
-        perror("WARNING Cannot make socket nonblocking: fcntl(F_SETFL)");
-        return -1;
-    }
-    return 0;
-}
-
 void accept_connection() {
     struct sockaddr_in addr;
     socklen_t addrlen = sizeof(addr);
@@ -184,20 +170,15 @@ void accept_connection() {
         goto close_incoming_socket;
     }
 
-    if (make_nonblocking(incoming) == -1) {
-        fprintf(stderr, "Closing socket\n");
+    fprintf(stderr, "Creating connection to the target...\n");
+    outcoming = socket(AF_INET, SOCK_STREAM, 0);
+    if (outcoming == -1) {
+        perror("socket");
         goto close_incoming_socket;
-    } else {
-        fprintf(stderr, "Creating connection to the target...\n");
-        outcoming = socket(AF_INET, SOCK_STREAM, 0);
-        if (outcoming == -1) {
-            perror("socket");
-            goto close_incoming_socket;
-        }
-        if (connect(outcoming, (struct sockaddr *) &dst_address, sizeof(dst_address)) == -1) {
-            perror("connect");
-            goto close_both_sockets;
-        }
+    }
+    if (connect(outcoming, (struct sockaddr *) &dst_address, sizeof(dst_address)) == -1) {
+        perror("connect");
+        goto close_both_sockets;
     }
 
     int slot = add_client(&addr, incoming, outcoming);
@@ -235,30 +216,41 @@ int get_rw_error_cause(int res, int err) {
                 // Ignore these errors.
                 break;
             case ECONNRESET:
+            case EPIPE:
                 return CAUSE_EOF;
             default:
                 return CAUSE_ERROR;
         }
-    }
-    if (res == 0) {
+    } else if (res == 0) {
         return CAUSE_EOF;
     }
     return CAUSE_NONE;
 }
 
-// Returns -1 if unrecoverable error ocured and 0 otherwise.
-int handle_transfer_error(int res, int err, int in_fd, int out_fd) {
-    switch (get_rw_error_cause(res, errno)) {
-        case CAUSE_ERROR:
-            perror("read");
-            /* FALLTHROUGH */
-        case CAUSE_EOF:
-            if (shutdown(out_fd, SHUT_WR) == -1 && errno != ENOTCONN)
-                // ENOTCONN appears when remote host closes both directions
-                perror("shutdown");
-            return -1;
+void try_shutdown(int fd, int dir) {
+    if (fd < 0)
+        fd = ~fd;
+
+    if (shutdown(fd, dir) == -1 && errno != ENOTCONN)
+        // ENOTCONN appears when remote host closes both directions
+        perror("shutdown");
+}
+
+void clear_pollfd_flags(struct pollfd *fd, short mask) {
+    if ((fd->events &= ~mask) == 0 && fd->fd >= 0) {
+        // We don't want to receive POLLHUP after we shutdown reading from socket.
+        fd->fd = ~fd->fd; // Negative fd values are ignored by pooll
     }
-    return 0;
+}
+
+void set_pollfd_flags(struct pollfd *fd, short mask) {
+    if (!mask)
+        return;
+
+    if (fd->fd < 0)
+        fd->fd = ~fd->fd;
+    
+    fd->events |= mask;
 }
 
 int transfer(
@@ -267,19 +259,35 @@ int transfer(
         struct round_buffer *buf) {
     if (in_fd->revents & POLLIN && !rb_full(buf)) {
         ssize_t res = read_rb(in_fd->fd, buf);
-        if (handle_transfer_error(res, errno, in_fd->fd, out_fd->fd) == -1)
-            return -1;
+        switch (get_rw_error_cause(res, errno)) {
+            case CAUSE_ERROR:
+                perror("read");
+                /* FALLTHROUGH */
+            case CAUSE_EOF:
+                clear_pollfd_flags(in_fd, POLLIN);
+                clear_pollfd_flags(out_fd, POLLOUT);
+                try_shutdown(out_fd->fd, SHUT_WR);
+                return -1;
+        }
     }
     if (out_fd->revents & POLLOUT && !rb_empty(buf)) {
         ssize_t res = write_rb(out_fd->fd, buf);
-        if (handle_transfer_error(res, errno, in_fd->fd, out_fd->fd) == -1)
-            return -1;
+        switch (get_rw_error_cause(res, errno)) {
+            case CAUSE_ERROR:
+                perror("write");
+                /* FALLTHROUGH */
+            case CAUSE_EOF:
+                clear_pollfd_flags(in_fd, POLLIN);
+                clear_pollfd_flags(out_fd, POLLOUT);
+                try_shutdown(in_fd->fd, SHUT_RD);
+                return -1;
+        }
     }
 
     if (rb_empty(buf))
-        out_fd->events &= ~POLLOUT;
+        clear_pollfd_flags(out_fd, POLLOUT);
     else
-        out_fd->events |= POLLOUT;
+        set_pollfd_flags(out_fd, POLLOUT);
 
     return 0;
 }
@@ -347,6 +355,10 @@ void setup_signals() {
 
     sigaction(SIGINT, &action, NULL);
     sigaction(SIGQUIT, &action, NULL);
+
+    action.sa_handler = SIG_IGN;
+
+    sigaction(SIGPIPE, &action, NULL);
 }
 
 void close_listening_socket() {
