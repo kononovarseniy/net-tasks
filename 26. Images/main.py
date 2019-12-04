@@ -1,5 +1,8 @@
+#from scapy.config import conf
+#conf.ipv6_enabled = False
 from scapy.all import sniff
 from scapy.layers.inet import TCP, IP
+from scapy.layers.inet6 import IPv6
 import time
 import os
 
@@ -148,7 +151,10 @@ def handleStream(stream):
 
 def handlePacket(packet):
     global id_counter
-    src = packet[IP].src
+    try:
+        src = packet[IP].src
+    except:
+        src = packet[IPv6].src
     dport = packet[TCP].dport
     stream = None
     for s in streams:
